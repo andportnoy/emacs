@@ -4132,7 +4132,7 @@ This function expects to be in the right *tramp* buffer."
 ;; On hydra.nixos.org, the $PATH environment variable is too long to
 ;; send it.  This is likely not due to PATH_MAX, but PIPE_BUF.  We
 ;; check it, and use a temporary file in case of.  See Bug#33781.
-(defun tramp-set-remote-path (vec)
+(defun tramp--set-remote-path (vec)
   "Set the remote environment PATH to existing directories.
 I.e., for each directory in `tramp-remote-path', it is tested
 whether it exists and if so, it is added to the environment
@@ -4161,6 +4161,13 @@ variable PATH."
 				 (tramp-shell-quote-argument tmpfile))))
       (tramp-send-command vec (format ". %s" tmpfile))
       (tramp-send-command vec (format "rm -f %s" tmpfile)))))
+
+(defun tramp--should-modify-remote-path-p (remote-path-spec)
+    (not (equal remote-path-spec '(tramp-own-remote-path))))
+
+(defun tramp-set-remote-path (vec)
+  (if (tramp--should-modify-remote-path-p tramp-remote-path)
+      (tramp--set-remote-path vec)))
 
 ;; ------------------------------------------------------------
 ;; -- Communication with external shell --
@@ -5553,6 +5560,8 @@ Nonexistent directories are removed from spec."
 	    (tramp-get-process vec) vec)
 	"remote-path"
       (let* ((remote-path (copy-tree tramp-remote-path))
+             (should-optimize-remote-path
+              (tramp--should-modify-remote-path-p remote-path))
 	     (elt1 (memq 'tramp-default-remote-path remote-path))
 	     (elt2 (memq 'tramp-own-remote-path remote-path))
 	     (default-remote-path
@@ -5610,17 +5619,21 @@ Nonexistent directories are removed from spec."
 		   (cdr elt2)))
 	  (setq remote-path (delq 'tramp-own-remote-path remote-path)))
 
-	;; Remove double entries.
-	(setq remote-path
-	      (cl-remove-duplicates
-	       remote-path :test #'string-equal :from-end t))
+        (when should-optimize-remote-path
+	  ;; Remove double entries.
+	  (setq remote-path
+	        (cl-remove-duplicates
+	         remote-path :test #'string-equal :from-end t))
 
-	;; Remove non-existing directories.
-	(let (remote-file-name-inhibit-cache)
-	  (tramp-bundle-read-file-names vec remote-path)
-	  (cl-remove-if
-	   (lambda (x) (not (tramp-get-file-property vec x "file-directory-p")))
-	   remote-path))))))
+	  ;; Remove non-existing directories.
+          (setq remote-path
+	        (let (remote-file-name-inhibit-cache)
+	          (tramp-bundle-read-file-names vec remote-path)
+                  (cl-remove-if
+	           (lambda (x)
+                     (not (tramp-get-file-property vec x "file-directory-p")))
+	           remote-path))))
+        remote-path))))
 
 ;; The PIPE_BUF in POSIX [1] can be as low as 512 [2]. Here are the values
 ;; on various platforms:
